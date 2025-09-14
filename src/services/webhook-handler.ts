@@ -35,6 +35,18 @@ export class WebhookHandler {
       }
 
       const customer = req.body;
+
+      try {
+        await Database.query(`
+          INSERT INTO webhook_receipts (tenant_id, topic, external_id)
+          VALUES ($1, $2, $3)
+        `, [tenant.id, 'customers/update', customer.id]);
+      } catch (e: any) {
+        if (e.code === '23505') { // unique violation
+          return res.status(200).json({ success: true, duplicate: true });
+        }
+        throw e;
+      }
       
       await Database.query(`
         INSERT INTO customers (
@@ -79,6 +91,18 @@ export class WebhookHandler {
       }
 
       const cartData = req.body;
+
+      try {
+        await Database.query(`
+          INSERT INTO webhook_receipts (tenant_id, topic, external_id)
+          VALUES ($1, $2, $3)
+        `, [tenant.id, 'carts/abandoned', cartData?.token ? parseInt(Buffer.from(cartData.token).toString('hex').slice(0,12), 16) : null]);
+      } catch (e: any) {
+        if (e.code === '23505') {
+          return res.status(200).json({ success: true, duplicate: true });
+        }
+        throw e;
+      }
       
       // Get customer ID if exists
       let customerId = null;
@@ -124,6 +148,18 @@ export class WebhookHandler {
       }
 
       const checkoutData = req.body;
+
+      try {
+        await Database.query(`
+          INSERT INTO webhook_receipts (tenant_id, topic, external_id)
+          VALUES ($1, $2, $3)
+        `, [tenant.id, 'checkouts/create', checkoutData?.id]);
+      } catch (e: any) {
+        if (e.code === '23505') {
+          return res.status(200).json({ success: true, duplicate: true });
+        }
+        throw e;
+      }
       
       let customerId = null;
       if (checkoutData.customer) {
