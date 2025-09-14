@@ -6,7 +6,6 @@ export class ShopifyAPIService {
   private accessToken: string;
 
   constructor(shopDomain: string, accessToken: string) {
-    // Sanitize the shopDomain to remove any protocol prefix
     const domain = shopDomain.replace(/^https?:\/\//, '');
     this.baseUrl = `https://${domain}/admin/api/2023-10`;
     this.accessToken = accessToken;
@@ -28,21 +27,24 @@ export class ShopifyAPIService {
     }
   }
 
-  async getCustomers(limit = 250, sinceId?: number): Promise<{ customers: ShopifyCustomer[] }> {
+  async getCustomers(limit = 250, sinceId?: number, updatedAtMin?: Date): Promise<{ customers: ShopifyCustomer[] }> {
     const params: any = { limit };
     if (sinceId) params.since_id = sinceId;
+    if (updatedAtMin) params.updated_at_min = updatedAtMin.toISOString();
     return this.makeRequest('/customers.json', params);
   }
 
-  async getOrders(limit = 250, sinceId?: number): Promise<{ orders: ShopifyOrder[] }> {
+  async getOrders(limit = 250, sinceId?: number, updatedAtMin?: Date): Promise<{ orders: ShopifyOrder[] }> {
     const params: any = { limit, status: 'any' };
     if (sinceId) params.since_id = sinceId;
+    if (updatedAtMin) params.updated_at_min = updatedAtMin.toISOString();
     return this.makeRequest('/orders.json', params);
   }
 
-  async getProducts(limit = 250, sinceId?: number): Promise<{ products: ShopifyProduct[] }> {
+  async getProducts(limit = 250, sinceId?: number, updatedAtMin?: Date): Promise<{ products: ShopifyProduct[] }> {
     const params: any = { limit };
     if (sinceId) params.since_id = sinceId;
+    if (updatedAtMin) params.updated_at_min = updatedAtMin.toISOString();
     return this.makeRequest('/products.json', params);
   }
 
