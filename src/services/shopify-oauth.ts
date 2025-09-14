@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fetch from 'node-fetch';
 import { config } from '../config';
 import { Database } from '../database/connection';
+import { encryptToken } from './encryption';
 
 function missingShopifyConfig(): string[] {
   const missing: string[] = [];
@@ -68,11 +69,19 @@ export async function exchangeCodeForToken(shop: string, code: string) {
 
 export async function upsertTenant(shop: string, accessToken: string) {
   const domain = shop.toLowerCase();
+  let storedToken = accessToken;
+  try {
+    if (process.env.TOKEN_ENCRYPTION_KEY) {
+      storedToken = encryptToken(accessToken);
+    }
+  } catch (e) {
+    console.warn('[encryption] Failed to encrypt access token, storing plaintext', (e as any).message);
+  }
   const result = await Database.query(`
     INSERT INTO tenants (shop_domain, access_token)
     VALUES ($1, $2)
     ON CONFLICT (shop_domain) DO UPDATE SET access_token = EXCLUDED.access_token, updated_at = NOW()
     RETURNING id, shop_domain, status, created_at
-  `, [domain, accessToken]);
+  `, [domain, storedToken]);
   return result.rows[0];
 }

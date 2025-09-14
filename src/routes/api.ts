@@ -6,6 +6,7 @@ import { buildShopifyAuthUrl, verifyHmac, exchangeCodeForToken, upsertTenant } f
 import crypto from 'crypto';
 import { generateStrongPassword } from '../services/password';
 import { adminSessionAuth } from '../middleware/admin-session';
+import { decryptToken, encryptToken } from '../services/encryption';
 
 const router = Router();
 // In-memory map for state -> timestamp (simple; could move to Redis)
@@ -91,14 +92,18 @@ const ingestionService = new DataIngestionService();
 
 router.post('/tenants', adminSessionAuth, async (req, res) => {
   try {
-    const { shop_domain, access_token } = req.body || {};
+  const { shop_domain, access_token } = req.body || {};
     if (!shop_domain) return res.status(400).json({ error: 'shop_domain is required' });
+    let stored = access_token || null;
+    if (stored && process.env.TOKEN_ENCRYPTION_KEY) {
+      try { stored = encryptToken(stored); } catch (e:any) { console.warn('[encryption] create tenant token encrypt failed', e.message); }
+    }
     const result = await Database.query(`
       INSERT INTO tenants (shop_domain, access_token)
       VALUES ($1, $2)
       ON CONFLICT (shop_domain) DO NOTHING
       RETURNING id, shop_domain, status, created_at, updated_at, (access_token IS NOT NULL) AS has_access_token
-    `, [shop_domain.toLowerCase().trim(), access_token || null]);
+    `, [shop_domain.toLowerCase().trim(), stored]);
     if (!result.rows.length) {
       const existing = await Database.query('SELECT id, shop_domain, status, created_at, updated_at, (access_token IS NOT NULL) AS has_access_token FROM tenants WHERE shop_domain = $1', [shop_domain.toLowerCase().trim()]);
       return res.status(200).json(existing.rows[0]);
@@ -125,7 +130,11 @@ router.post('/tenants/init', adminSessionAuth, async (req, res) => {
       if (existing.rows.length) {
         tenantRow = existing.rows[0];
       } else {
-        const t = await q(`INSERT INTO tenants (shop_domain, access_token) VALUES ($1,$2) RETURNING id, shop_domain, status, created_at, (access_token IS NOT NULL) AS has_access_token`, [shop_domain.toLowerCase().trim(), access_token || null]);
+        let stored = access_token || null;
+        if (stored && process.env.TOKEN_ENCRYPTION_KEY) {
+          try { stored = encryptToken(stored); } catch (e:any) { console.warn('[encryption] init tenant token encrypt failed', e.message); }
+        }
+        const t = await q(`INSERT INTO tenants (shop_domain, access_token) VALUES ($1,$2) RETURNING id, shop_domain, status, created_at, (access_token IS NOT NULL) AS has_access_token`, [shop_domain.toLowerCase().trim(), stored]);
         tenantRow = t.rows[0];
       }
       const u = await q(`INSERT INTO tenant_users (tenant_id, email, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING id, email, role, created_at`, [tenantRow.id, user_email, passwordHash, role || 'owner']);
@@ -175,23 +184,27 @@ router.post('/tenants/:tenantId/ingest', multiAuth, ensureTenantAccess, async (r
     if (!tenantData.access_token) {
       return res.status(400).json({ error: 'Tenant not connected to Shopify yet (missing access token)' });
     }
-  const results: Record<string, any> = {};
+    let token = tenantData.access_token;
+    if (process.env.TOKEN_ENCRYPTION_KEY) {
+      try { token = decryptToken(token); } catch (e:any) { return res.status(500).json({ error: 'Failed to decrypt tenant access token'}); }
+    }
+    const results: Record<string, any> = {};
 
     if (!data_types || data_types.includes('customers')) {
       results['customers'] = await ingestionService.ingestCustomers(
-        tenantId, tenantData.shop_domain, tenantData.access_token
+        tenantId, tenantData.shop_domain, token
       );
     }
 
     if (!data_types || data_types.includes('products')) {
       results['products'] = await ingestionService.ingestProducts(
-        tenantId, tenantData.shop_domain, tenantData.access_token
+        tenantId, tenantData.shop_domain, token
       );
     }
 
     if (!data_types || data_types.includes('orders')) {
       results['orders'] = await ingestionService.ingestOrders(
-        tenantId, tenantData.shop_domain, tenantData.access_token
+        tenantId, tenantData.shop_domain, token
       );
     }
 
@@ -483,18 +496,17 @@ router.get('/tenants/:tenantId/metrics/kpis', multiAuth, ensureTenantAccess, asy
 
 router.get('/stats', apiKeyOrAdminSession, async (req, res) => {
   try {
-    // Aggregate stats across all tenants
     const customerResult = await Database.query('SELECT COUNT(*) as count FROM customers');
     const orderResult = await Database.query('SELECT COUNT(*) as count, COALESCE(SUM(total_price),0) as revenue FROM orders');
-    const stats = {
+    const data = {
       totalCustomers: parseInt(customerResult.rows[0].count),
       totalOrders: parseInt(orderResult.rows[0].count),
       totalRevenue: parseFloat(orderResult.rows[0].revenue)
     };
-    res.json(stats);
+    (res as any).ok ? (res as any).ok(data) : res.json(data);
   } catch (error) {
     console.error('Get stats error:', error);
-    res.status(500).json({ error: 'Failed to fetch stats' });
+    (res as any).fail ? (res as any).fail('STATS_FETCH_FAILED', 'Failed to fetch stats', 500) : res.status(500).json({ error: 'Failed to fetch stats' });
   }
 });
 
@@ -544,22 +556,46 @@ router.get('/orders', apiKeyOrAdminSession, async (req, res) => {
 // Get top customers by total spend
 router.get('/customers/top-spenders', apiKeyOrAdminSession, async (req, res) => {
   try {
-    const result = await Database.query(`
-      SELECT id, first_name || ' ' || last_name AS name, email, total_spent
-      FROM customers
-      ORDER BY total_spent DESC
-      LIMIT 10
-    `);
-    const customers = result.rows.map(row => ({
+    const limitParam = parseInt(String(req.query.limit || '10'), 10);
+    const limit = isNaN(limitParam) ? 10 : Math.min(Math.max(limitParam, 1), 100);
+    const result = await Database.query(
+      `SELECT id, first_name || ' ' || last_name AS name, email, total_spent
+       FROM customers
+       ORDER BY total_spent DESC
+       LIMIT $1`, [limit]
+    );
+    const data = result.rows.map(row => ({
       id: row.id,
       name: row.name,
       email: row.email,
       total_spend: parseFloat(row.total_spent)
     }));
-    res.json(customers);
+    (res as any).ok ? (res as any).ok(data, { limit }) : res.json(data);
   } catch (error) {
     console.error('Get top customers error:', error);
-    res.status(500).json({ error: 'Failed to fetch top customers' });
+    (res as any).fail ? (res as any).fail('TOP_CUSTOMERS_FETCH_FAILED', 'Failed to fetch top customers', 500) : res.status(500).json({ error: 'Failed to fetch top customers' });
+  }
+});
+
+// Simple metrics endpoint (counts + latest sync log timestamp)
+router.get('/metrics', adminSessionAuth, async (req, res) => {
+  try {
+    const [tenants, customers, orders, lastSync] = await Promise.all([
+      Database.query('SELECT COUNT(*)::int AS c FROM tenants'),
+      Database.query('SELECT COUNT(*)::int AS c FROM customers'),
+      Database.query('SELECT COUNT(*)::int AS c FROM orders'),
+      Database.query(`SELECT MAX(completed_at) AS last_completed FROM sync_logs WHERE status='completed'`)
+    ]);
+    const data = {
+      tenants: tenants.rows[0].c,
+      customers: customers.rows[0].c,
+      orders: orders.rows[0].c,
+      last_sync_completed_at: lastSync.rows[0].last_completed
+    };
+    (res as any).ok ? (res as any).ok(data) : res.json(data);
+  } catch (e) {
+    console.error('metrics error', e);
+    (res as any).fail ? (res as any).fail('METRICS_FAILED', 'Failed to fetch metrics', 500) : res.status(500).json({ error: 'Failed to fetch metrics' });
   }
 });
 

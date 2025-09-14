@@ -12,6 +12,7 @@ import { config } from './config';
 import { Database } from './database/connection';
 import { DataIngestionService } from './services/data-ingestion';
 import { responseWrapper, errorHandler } from './middleware/response';
+import { decryptToken } from './services/encryption';
 import { runMigrations } from './database/migrate';
 
 dotenv.config();
@@ -116,11 +117,15 @@ async function runScheduledIngestion() {
         console.log(`[scheduler] Skipping tenant ${t.id} (${t.shop_domain}) - no access token yet`);
         continue;
       }
+      let token = t.access_token;
+      if (process.env.TOKEN_ENCRYPTION_KEY) {
+        try { token = decryptToken(token); } catch (e) { console.warn('[scheduler] decrypt failed, skipping tenant', t.id, (e as any).message); continue; }
+      }
       console.log(`[scheduler] Ingesting tenant ${t.id}`);
       try {
-        await ingestionService.ingestCustomers(t.id, t.shop_domain, t.access_token);
-        await ingestionService.ingestProducts(t.id, t.shop_domain, t.access_token);
-        await ingestionService.ingestOrders(t.id, t.shop_domain, t.access_token);
+        await ingestionService.ingestCustomers(t.id, t.shop_domain, token);
+        await ingestionService.ingestProducts(t.id, t.shop_domain, token);
+        await ingestionService.ingestOrders(t.id, t.shop_domain, token);
       } catch (e) {
         console.error(`[scheduler] Error ingesting tenant ${t.id}`, e);
       }
