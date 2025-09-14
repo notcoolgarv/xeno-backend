@@ -3,17 +3,21 @@ import { ShopifyAPIService } from './shopify-api';
 import { ShopifyCustomer, ShopifyOrder, ShopifyProduct, TenantConfig } from '../types/shopify';
 
 export class DataIngestionService {
-  async ingestCustomers(tenantId: string, shopDomain: string, accessToken: string) {
+  async ingestCustomers(tenantId: string, shopDomain: string, accessToken: string): Promise<{ success: boolean; processed: number }> {
     const shopify = new ShopifyAPIService(shopDomain, accessToken);
     let hasMore = true;
     let sinceId: number | undefined;
     let totalProcessed = 0;
 
+  const checkpoint = await Database.query(`SELECT last_updated_at FROM sync_checkpoints WHERE tenant_id = $1 AND entity = 'customers'`, [tenantId]);
+  const lastUpdatedAt: Date | null = checkpoint.rows[0]?.last_updated_at || null;
+
     const logId = await this.createSyncLog(tenantId, 'customers');
 
     try {
+      let maxUpdatedInRun: Date | null = null;
       while (hasMore) {
-        const { customers } = await shopify.getCustomers(250, sinceId);
+  const { customers }: { customers: ShopifyCustomer[] } = await shopify.getCustomers(250, sinceId, lastUpdatedAt ?? undefined);
         
         if (customers.length === 0) {
           hasMore = false;
@@ -47,6 +51,13 @@ export class DataIngestionService {
 
         totalProcessed += customers.length;
         sinceId = customers[customers.length - 1].id;
+        // Track max updated_at for checkpoint advancement
+        for (const c of customers) {
+          const updatedAt = new Date(c.updated_at || c.created_at);
+          if (!maxUpdatedInRun || updatedAt > maxUpdatedInRun) {
+            maxUpdatedInRun = updatedAt;
+          }
+        }
         
         if (customers.length < 250) {
           hasMore = false;
@@ -56,6 +67,15 @@ export class DataIngestionService {
       }
 
       await this.completeSyncLog(logId, 'completed', totalProcessed);
+      if (totalProcessed > 0 && maxUpdatedInRun) {
+        const latestUpdated = maxUpdatedInRun;
+        await Database.query(`
+          INSERT INTO sync_checkpoints (tenant_id, entity, last_updated_at, last_run_at)
+          VALUES ($1, 'customers', $2, NOW())
+          ON CONFLICT (tenant_id, entity)
+          DO UPDATE SET last_updated_at = GREATEST(sync_checkpoints.last_updated_at, EXCLUDED.last_updated_at), last_run_at = NOW()
+        `, [tenantId, latestUpdated]);
+      }
       return { success: true, processed: totalProcessed };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
@@ -64,17 +84,20 @@ export class DataIngestionService {
     }
   }
 
-  async ingestProducts(tenantId: string, shopDomain: string, accessToken: string) {
+  async ingestProducts(tenantId: string, shopDomain: string, accessToken: string): Promise<{ success: boolean; processed: number }> {
     const shopify = new ShopifyAPIService(shopDomain, accessToken);
     let hasMore = true;
     let sinceId: number | undefined;
     let totalProcessed = 0;
 
     const logId = await this.createSyncLog(tenantId, 'products');
+    const checkpoint = await Database.query(`SELECT last_updated_at FROM sync_checkpoints WHERE tenant_id = $1 AND entity = 'products'`, [tenantId]);
+    const lastUpdatedAt: Date | null = checkpoint.rows[0]?.last_updated_at || null;
 
     try {
+      let maxUpdatedInRun: Date | null = null;
       while (hasMore) {
-        const { products } = await shopify.getProducts(250, sinceId);
+  const { products }: { products: ShopifyProduct[] } = await shopify.getProducts(250, sinceId, lastUpdatedAt ?? undefined);
         
         if (products.length === 0) {
           hasMore = false;
@@ -140,6 +163,12 @@ export class DataIngestionService {
 
         totalProcessed += products.length;
         sinceId = products[products.length - 1].id;
+        for (const p of products) {
+          const updatedAt = new Date(p.updated_at || p.created_at);
+          if (!maxUpdatedInRun || updatedAt > maxUpdatedInRun) {
+            maxUpdatedInRun = updatedAt;
+          }
+        }
         
         if (products.length < 250) {
           hasMore = false;
@@ -149,6 +178,15 @@ export class DataIngestionService {
       }
 
       await this.completeSyncLog(logId, 'completed', totalProcessed);
+      if (totalProcessed > 0 && maxUpdatedInRun) {
+        const latestUpdated = maxUpdatedInRun;
+        await Database.query(`
+          INSERT INTO sync_checkpoints (tenant_id, entity, last_updated_at, last_run_at)
+          VALUES ($1, 'products', $2, NOW())
+          ON CONFLICT (tenant_id, entity)
+          DO UPDATE SET last_updated_at = GREATEST(sync_checkpoints.last_updated_at, EXCLUDED.last_updated_at), last_run_at = NOW()
+        `, [tenantId, latestUpdated]);
+      }
       return { success: true, processed: totalProcessed };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
@@ -157,17 +195,20 @@ export class DataIngestionService {
     }
   }
 
-  async ingestOrders(tenantId: string, shopDomain: string, accessToken: string) {
+  async ingestOrders(tenantId: string, shopDomain: string, accessToken: string): Promise<{ success: boolean; processed: number }> {
     const shopify = new ShopifyAPIService(shopDomain, accessToken);
     let hasMore = true;
     let sinceId: number | undefined;
     let totalProcessed = 0;
 
     const logId = await this.createSyncLog(tenantId, 'orders');
+    const checkpoint = await Database.query(`SELECT last_updated_at FROM sync_checkpoints WHERE tenant_id = $1 AND entity = 'orders'`, [tenantId]);
+    const lastUpdatedAt: Date | null = checkpoint.rows[0]?.last_updated_at || null;
 
     try {
+      let maxUpdatedInRun: Date | null = null;
       while (hasMore) {
-        const { orders } = await shopify.getOrders(250, sinceId);
+  const { orders }: { orders: ShopifyOrder[] } = await shopify.getOrders(250, sinceId, lastUpdatedAt ?? undefined);
         
         if (orders.length === 0) {
           hasMore = false;
@@ -245,6 +286,12 @@ export class DataIngestionService {
 
         totalProcessed += orders.length;
         sinceId = orders[orders.length - 1].id;
+        for (const o of orders) {
+          const updatedAt = new Date(o.updated_at || o.created_at);
+          if (!maxUpdatedInRun || updatedAt > maxUpdatedInRun) {
+            maxUpdatedInRun = updatedAt;
+          }
+        }
         
         if (orders.length < 250) {
           hasMore = false;
@@ -254,6 +301,15 @@ export class DataIngestionService {
       }
 
       await this.completeSyncLog(logId, 'completed', totalProcessed);
+      if (totalProcessed > 0 && maxUpdatedInRun) {
+        const latestUpdated = maxUpdatedInRun;
+        await Database.query(`
+          INSERT INTO sync_checkpoints (tenant_id, entity, last_updated_at, last_run_at)
+          VALUES ($1, 'orders', $2, NOW())
+          ON CONFLICT (tenant_id, entity)
+          DO UPDATE SET last_updated_at = GREATEST(sync_checkpoints.last_updated_at, EXCLUDED.last_updated_at), last_run_at = NOW()
+        `, [tenantId, latestUpdated]);
+      }
       return { success: true, processed: totalProcessed };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
@@ -278,5 +334,19 @@ export class DataIngestionService {
       SET status = $1, records_processed = $2, error_message = $3, completed_at = NOW()
       WHERE id = $4
     `, [status, recordsProcessed, errorMessage, logId]);
+  }
+
+  async ingestAll(config: TenantConfig, entities: Array<'customers' | 'products' | 'orders'> = ['customers','products','orders']) {
+    const results: Record<string, any> = {};
+    if (entities.includes('customers')) {
+      results.customers = await this.ingestCustomers(config.id, config.shop_domain, config.access_token);
+    }
+    if (entities.includes('products')) {
+      results.products = await this.ingestProducts(config.id, config.shop_domain, config.access_token);
+    }
+    if (entities.includes('orders')) {
+      results.orders = await this.ingestOrders(config.id, config.shop_domain, config.access_token);
+    }
+    return results;
   }
 }
