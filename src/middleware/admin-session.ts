@@ -22,6 +22,17 @@ async function fetchSession(token: string) {
 export async function adminSessionAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const token = (req.cookies && req.cookies[COOKIE_NAME]) || undefined;
+    
+    // if (process.env.NODE_ENV === 'production') {
+    //   console.log('Admin session check:', {
+    //     hasCookies: !!req.cookies,
+    //     cookieNames: req.cookies ? Object.keys(req.cookies) : [],
+    //     hasAdminSession: !!token,
+    //     userAgent: req.headers['user-agent'],
+    //     origin: req.headers['origin']
+    //   });
+    // }
+    
     if (!token) return res.status(401).json({ error: 'Not authenticated' });
     const result = await fetchSession(token);
     if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid session' });
@@ -40,11 +51,14 @@ export const adminAuthRouter = Router();
 
 function setSessionCookie(res: Response, token: string, ttlDays: number) {
   const maxAgeMs = ttlDays * 24 * 60 * 60 * 1000;
+  const isProduction = process.env.NODE_ENV === 'production';
+  
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: false,
-    maxAge: maxAgeMs
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction, 
+    maxAge: maxAgeMs,
+    domain: isProduction ? undefined : undefined // Let browser determine domain
   });
 }
 
@@ -69,6 +83,17 @@ adminAuthRouter.post('/login', async (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + DEFAULT_TTL_DAYS * 86400000);
   await Database.query('INSERT INTO admin_sessions (admin_user_id, session_token, expires_at) VALUES ($1, $2, $3)', [row.id, token, expires]);
+  
+  // if (process.env.NODE_ENV === 'production') {
+  //   console.log('Setting admin session cookie:', {
+  //     isProduction: true,
+  //     cookieName: COOKIE_NAME,
+  //     tokenLength: token.length,
+  //     expires: expires.toISOString(),
+  //     origin: req.headers['origin']
+  //   });
+  // }
+  
   setSessionCookie(res, token, DEFAULT_TTL_DAYS);
   res.json({ user: { id: row.id, email: row.email }, expires_at: expires.toISOString() });
 });
@@ -77,7 +102,14 @@ adminAuthRouter.post('/logout', adminSessionAuth, async (req, res) => {
   const token = (req.cookies && req.cookies[COOKIE_NAME]) || undefined;
   if (token) {
     await Database.query('UPDATE admin_sessions SET revoked_at = NOW() WHERE session_token = $1 AND revoked_at IS NULL', [token]);
-    res.clearCookie(COOKIE_NAME);
+    
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.clearCookie(COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: isProduction ? 'none' : 'lax',
+      secure: isProduction,
+      domain: isProduction ? undefined : undefined
+    });
   }
   res.json({ success: true });
 });
