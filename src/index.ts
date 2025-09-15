@@ -21,7 +21,25 @@ const app = express();
 const port = config.port;
 const webhookHandler = new WebhookHandler(config.webhookSecret);
 
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173', 
+    'http://localhost:3000',
+    'http://localhost:4173', 
+    'http://127.0.0.1:5173',
+    'https://xeno-frontend-garv.vercel.app', 
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-API-Key',
+    'X-Shopify-Topic',
+    'X-Shopify-Hmac-Sha256',
+    'X-Shopify-Shop-Domain'
+  ]
+}));
 app.use(cookieParser());
 
 app.use((req, _res, next) => {
