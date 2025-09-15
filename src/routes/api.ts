@@ -164,7 +164,8 @@ router.get('/tenants', adminSessionAuth, async (req, res) => {
   }
 });
 
-router.post('/tenants/:tenantId/ingest', multiAuth, ensureTenantAccess, async (req, res) => {
+// Ingestion: allow either tenant auth (API key/basic) or admin session.
+router.post('/tenants/:tenantId/ingest', adminSessionAuth, multiAuth, ensureTenantAccess, async (req, res) => {
   try {
     const { tenantId } = req.params;
     if (req.tenantId && req.tenantId !== tenantId) {
