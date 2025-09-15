@@ -684,3 +684,58 @@ router.get('/tenant/lookup', async (req, res) => {
     res.status(500).json({ error: 'Lookup failed' });
   }
 });
+
+router.post('/tenant/set-token', tenantBasicAuth, async (req, res) => {
+  try {
+    const { access_token } = req.body || {};
+    if (!access_token || typeof access_token !== 'string') {
+      return res.status(400).json({ error: 'access_token is required' });
+    }
+    
+    const tenantId = (req as any).tenant?.id;
+    if (!tenantId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const tenant = await Database.query('SELECT shop_domain FROM tenants WHERE id = $1', [tenantId]);
+    if (!tenant.rows.length) return res.status(404).json({ error: 'Tenant not found' });
+    
+    const shopDomain = tenant.rows[0].shop_domain;
+    const testUrl = `https://${shopDomain}/admin/api/2024-01/shop.json`;
+    
+    try {
+      const testResponse = await fetch(testUrl, {
+        headers: { 'X-Shopify-Access-Token': access_token }
+      });
+      
+      if (!testResponse.ok) {
+        return res.status(400).json({ 
+          error: 'Invalid access token', 
+          detail: `Shopify API returned ${testResponse.status}` 
+        });
+      }
+    } catch (fetchError) {
+      return res.status(400).json({ 
+        error: 'Failed to validate token against Shopify API',
+        detail: 'Network error or invalid shop domain'
+      });
+    }
+
+    let storedToken = access_token;
+    try {
+      if (process.env.TOKEN_ENCRYPTION_KEY) {
+        storedToken = encryptToken(access_token);
+      }
+    } catch (e) {
+      console.warn('[encryption] Failed to encrypt access token, storing plaintext', (e as any).message);
+    }
+
+    await Database.query(
+      'UPDATE tenants SET access_token = $1, updated_at = NOW() WHERE id = $2',
+      [storedToken, tenantId]
+    );
+
+    (res as any).ok ? (res as any).ok({ success: true }) : res.json({ success: true });
+  } catch (e: any) {
+    console.error('Set token error', e);
+    (res as any).fail ? (res as any).fail('SET_TOKEN_FAILED', 'Failed to set access token', 500) : res.status(500).json({ error: 'Failed to set access token' });
+  }
+});
