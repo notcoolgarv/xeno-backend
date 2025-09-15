@@ -21,10 +21,7 @@ const app = express();
 const port = config.port;
 const webhookHandler = new WebhookHandler(config.webhookSecret);
 
-app.use(cors({
-  origin: 'http://localhost:5173',
-  credentials: true
-}));
+app.use(cors());
 app.use(cookieParser());
 
 app.use((req, _res, next) => {
@@ -137,6 +134,9 @@ async function runScheduledIngestion() {
 }
 
 setTimeout(runScheduledIngestion, 30_000);
+setInterval(runScheduledIngestion, SIX_HOURS_MS);
+
+app.use(errorHandler);
 setInterval(runScheduledIngestion, SIX_HOURS_MS);
 
 app.use(errorHandler);
